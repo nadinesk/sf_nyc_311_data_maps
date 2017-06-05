@@ -1,0 +1,197 @@
+---
+title: "sf-bulky items"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+install.packages('viridis')
+library(openxlsx)
+library(rgdal)
+library(maptools)
+library(ggplot2)
+library(plyr)
+library(rgeos)
+library(RColorBrewer)
+library(ggthemes)
+library(reshape2)
+library(dplyr)
+if (!require(gpclib)) install.packages("gpclib", type="source")
+gpclibPermit()
+library(viridis)
+```
+
+## TOP 2016 SF
+
+### Run SQL Query
+
+Top complaint 2016 SF is Bulky Items. 
+
+```{sql top_2016_Sf}
+#standardSQL
+SELECT
+complaint_type,
+COUNT(descriptor) AS total_count
+FROM
+`bigquery-public-data.san_francisco.311_service_requests`
+WHERE 
+EXTRACT(year from created_date) = 2016
+GROUP BY complaint_type
+ORDER BY
+2 DESC
+
+```
+
+### Results
+
+```{r top_2016_sf_results}
+
+top2016SF <- read.csv("D:/sfnyc/top2016SF.csv")
+
+top2016SF_10 <- top2016SF %>%
+                  slice(1:10) %>%
+                  rename(c('total_count_descriptor' = 'total_count'))
+
+tbl_df(top2016SF_10)
+
+
+```
+
+## Bulky Items
+
+### What does that entail? 
+
+Get the descriptors:
+
+```{sql sql_bulky_items_descriptor}
+
+#standardSQL
+SELECT
+complaint_type,
+descriptor,
+COUNT(descriptor) AS total_count_descriptor
+FROM
+`bigquery-public-data.san_francisco.311_service_requests`
+WHERE 
+complaint_type = "Bulky Items"
+and EXTRACT(year from created_date) = 2016
+GROUP BY complaint_type, descriptor
+ORDER BY
+2 DESC
+
+
+```
+
+What are the descriptors:
+
+```{r bulky_items_descriptor}
+
+b_desc <- read.csv("D:/sfnyc/bulky_items_desc.csv")
+
+b_desc <- b_desc %>%
+            arrange(desc(total_count_descriptor))
+
+tbl_df(b_desc)
+
+
+```
+
+## SF 2016 - Longitudes and Latitudes for Bulky Items
+
+### Get results
+The where condition pulled segments of the results, because BigQuery wouldn't allow larger downloads.
+
+```{sql sql_monthly_long_lat}
+
+#standardSQL
+SELECT
+complaint_type,
+longitude, 
+latitude,
+COUNT(descriptor) AS total_count_descriptor
+FROM
+`bigquery-public-data.san_francisco.311_service_requests`
+WHERE 
+complaint_type = "Bulky Items"
+and EXTRACT(year from created_date) = 2016
+and EXTRACT(month from created_date) < 3
+and longitude != 0
+GROUP BY complaint_type, descriptor,longitude, latitude
+ORDER BY
+2 DESC
+
+
+```
+
+
+### Read results
+
+Read in segmented files and combine
+```{r bulky_items_descriptor}
+
+sfb1 <- read.csv("D:/sfnyc/sfmo_lt3.csv")
+sfb2 <- read.csv("D:/sfnyc/sfmo_gte3.lt6.csv")
+sfb3 <- read.csv("D:/sfnyc/sfmo_gte6.lt9.csv")
+sfb4 <- read.csv("D:/sfnyc/sfmo_gte9.lte12.csv")
+sfb5 <- read.csv("D:/sfnyc/mosf_e12month.csv")
+
+sfba <- rbind(sfb1, sfb2, sfb3, sfb4, sfb5)
+
+sfba <- sfba %>%
+          arrange(desc(total_count_descriptor))
+
+tbl_df(sfba)
+
+```
+
+
+## Read in SF Shapefile
+
+Read in shapefile, get list of neighborhoods and their coordinates to include as text labels
+
+```{r sf_shapefile}
+
+ba <-readOGR("D:/pn","planning_neighborhoods")
+
+ba_wgs84 <- spTransform(ba, CRS("+proj=longlat +datum=WGS84"))
+
+ba_wgs84@data$id = rownames(ba_wgs84@data)
+ba_wgs84.points = fortify(ba_wgs84, region="id")
+ba_wgs84.df = join(ba_wgs84.points, ba_wgs84@data, by="id")
+ba_wgs84.df
+
+tbl_df(ba_wgs84.df)
+
+baidList <- ba_wgs84@data$neighborho
+# "coordinates" extracts centroids of the polygons, in the order listed at worldMap@data
+centroids.df <- as.data.frame(coordinates(ba_wgs84))
+names(centroids.df) <- c("Longitude", "Latitude")  #more sensible column names
+# This shapefile contained population data, let's plot it.
+#popList <- worldMap@data$POP2005
+
+id.df <- data.frame(id = baidList, centroids.df)
+
+tbl_df(id.df)
+
+
+```
+
+## Plot count of complaints by longitude and latitude, and map
+
+```{r long_lat_comp_map}
+
+sf_bi <- ggplot(sfba, aes(longitude, latitude))  + #"id" is col in your df, not in the map object 
+  expand_limits(x = ba_wgs84.df$long, y = ba_wgs84.df$lat) + 
+  geom_polygon(data= ba_wgs84.df, aes(x=long, y=lat, group=group), fill="white", color="pink", size=0.15) +
+  geom_point(aes(color=total_count_descriptor, size=total_count_descriptor, alpha=total_count_descriptor) ) + 
+  geom_text(data=id.df, aes(label = id, x = Longitude, y = Latitude), size = 3) +
+  labs(x = "Longitude", y = "Latitude", title = "San Francisco-Bulky Items") + 
+   scale_colour_gradient(low = "#99ff99", high = "black")
+
+sf_bi
+
+dev.copy(png,'D:/sfnyc/sf_bi.png')
+dev.off()
+
+```
+

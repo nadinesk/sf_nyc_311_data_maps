@@ -1,0 +1,226 @@
+---
+title: "nyc-hhw"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+install.packages('viridis')
+library(openxlsx)
+library(rgdal)
+library(maptools)
+library(ggplot2)
+library(plyr)
+library(rgeos)
+library(RColorBrewer)
+library(ggthemes)
+library(reshape2)
+library(dplyr)
+if (!require(gpclib)) install.packages("gpclib", type="source")
+gpclibPermit()
+library(viridis)
+```
+
+## TOP 2016 SF
+
+### Run SQL Query
+
+Top complaint 2016 SF is Bulky Items. 
+
+```{sql top_2016_nyc}
+#standardSQL
+SELECT
+complaint_type,
+COUNT(descriptor) AS total_count
+FROM
+`bigquery-public-data.new_york.311_service_requests`
+WHERE 
+EXTRACT(year from created_date) = 2016
+GROUP BY complaint_type
+ORDER BY
+2 DESC
+```
+
+### Results
+
+```{r top_2016_nyc_results}
+
+top2016NYC <- read.csv("D:/sfnyc/top2016NYC.csv")
+
+top2016NYC_10 <- top2016NYC %>%
+                  slice(1:10)
+
+tbl_df(top2016NYC_10)
+
+
+
+```
+
+## HEAT/HOT WATER
+
+### What does that entail? 
+
+Get the descriptors:
+
+```{sql sql_bulky_items_descriptor}
+#standardSQL
+SELECT
+complaint_type,
+descriptor,
+COUNT(descriptor) AS total_count_descriptor
+FROM
+`bigquery-public-data.new_york.311_service_requests`
+WHERE 
+complaint_type = "HEAT/HOT WATER"
+and EXTRACT(year from created_date) = 2016
+GROUP BY complaint_type, descriptor
+ORDER BY
+2 DESC
+
+```
+
+What are the descriptors:
+
+```{r bulky_items_descriptor}
+
+h_desc <- read.csv("D:/sfnyc/heat_hw_desc.csv")
+
+h_desc <- h_desc %>%
+            arrange(desc(total_count_descriptor))
+
+tbl_df(h_desc)
+
+
+```
+
+## NYC 2016 - Longitudes and Latitudes for Bulky Items
+
+### Get results
+The where condition pulled segments of the results, because BigQuery wouldn't allow larger downloads.
+
+```{sql sql_monthly_long_lat}
+
+#standardSQL
+SELECT
+complaint_type,
+longitude, 
+latitude,
+COUNT(descriptor) AS total_count_descriptor
+FROM
+`bigquery-public-data.new_york.311_service_requests`
+WHERE 
+complaint_type = "Bulky Items"
+and EXTRACT(year from created_date) = 2016
+and EXTRACT(month from created_date) = 3
+and longitude != 0
+GROUP BY complaint_type, descriptor,longitude, latitude
+ORDER BY
+2 DESC
+
+
+```
+
+
+### Read results
+
+Read in segmented files and combine
+```{r bulky_items_descriptor}
+
+nyb1 <- read.csv("D:/sfnyc/month1.csv")
+nyb2 <- read.csv("D:/sfnyc/month2.csv")
+nyb3 <- read.csv("D:/sfnyc/month3.csv")
+nyb4 <- read.csv("D:/sfnyc/month4.csv")
+nyb5 <- read.csv("D:/sfnyc/month5.csv")
+nyb6 <- read.csv("D:/sfnyc/month6.csv")
+nyb7 <- read.csv("D:/sfnyc/month7.csv")
+nyb8_11 <- read.csv("D:/sfnyc/months8-11.csv")
+nyb12 <- read.csv("D:/sfnyc/month12.csv")
+
+nyba <- rbind(nyb1, nyb2, nyb3, nyb4, nyb5, nyb6, nyb7, nyb8_11, nyb12)
+
+nyba <- nyba %>%
+          arrange(desc(total_count))
+
+tbl_df(nyba)
+
+sum(nyba$total_count)
+
+# t1 <- read.csv("D:/sfnyc/first16K.csv")
+# t2 <- read.csv("D:/sfnyc/second16K.csv")
+# t3 <- read.csv("D:/sfnyc/third16K.csv")
+# 
+# t1 <- read.csv("D:/sfnyc/t1.csv")
+# t2 <- read.csv("D:/sfnyc/t2.csv")
+# t3 <- read.csv("D:/sfnyc/t3.csv")
+# 
+# 
+# 16000+16000+4488
+# 
+# ta <- rbind(t1, t2, t3)
+# 
+# sum(ta$total_count)
+# 
+# ta$dup <- duplicated(ta)
+# 
+# table(ta$dup)
+
+```
+
+
+## Read in NYC Shapefile
+
+Read in shapefile, get list of neighborhoods and their coordinates to include as text labels
+
+```{r sf_shapefile}
+
+ny <-readOGR("D:/nybb_17a","nybb")
+
+ny_wgs84 <- spTransform(ny, CRS("+proj=longlat +datum=WGS84"))
+
+ny_wgs84@data$id = rownames(ny_wgs84@data)
+ny_wgs84.points = fortify(ny_wgs84, region="id")
+ny_wgs84.df = join(ny_wgs84.points, ny_wgs84@data, by="id")
+ny_wgs84.df
+
+tbl_df(ny_wgs84.df)
+
+idList <- ny_wgs84@data$BoroName
+# "coordinates" extracts centroids of the polygons, in the order listed at worldMap@data
+centroids.df <- as.data.frame(coordinates(ny_wgs84))
+names(centroids.df) <- c("Longitude", "Latitude")  #more sensible column names
+# This shapefile contained population data, let's plot it.
+#popList <- worldMap@data$POP2005
+
+id.df <- data.frame(id = idList, centroids.df)
+
+tbl_df(id.df)
+
+# ggplot(ny_wgs84.df) + 
+#   aes(long,lat,group=group) + 
+#   geom_polygon() +
+#   geom_path(color="white") +  
+#   coord_equal() 
+
+```
+
+## Plot count of complaints by longitude and latitude, and map
+
+```{r long_lat_comp_map}
+
+ny_hhw <- ggplot(nyba, aes(longitude, latitude))  + #"id" is col in your df, not in the map object 
+  expand_limits(x = ny_wgs84.df$long, y = ny_wgs84.df$lat) + 
+  geom_polygon(data= ny_wgs84.df, aes(x=long, y=lat, group=group), fill="white", color="pink", size=0.15) +
+  geom_point(aes(color=total_count, size=total_count, alpha=total_count) ) + 
+  geom_text(data=id.df, aes(label = id, x = Longitude, y = Latitude), size=3) +
+  labs(x = "Longitude", y = "Latitude", title = "NYC-Heat/Hot Water") + 
+  scale_colour_gradient(low = "#ffb2b2", high = "black")
+ny_hhw
+
+table(nyba$total_count)
+summary(nyba)
+
+
+
+
+```
+
